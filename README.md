@@ -8,8 +8,7 @@
 ###  Source codes:
 + create_data.py: create data in pytorch format
 + utils.py: include TestbedDataset used by create_data.py to create data, and performance measures.
-+ training.py: train a GraphDTA model.
-+ models/ginconv.py, gat.py, gat_gcn.py, and gcn.py: proposed models GINConvNet, GATNet, GAT_GCN, and GCNNet receiving graphs as input for drugs.
++ training.py
 
 # Step-by-step running:
 
