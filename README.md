@@ -8,7 +8,8 @@
 ###  Source codes:
 + create_data.py: create data in pytorch format
 + utils.py: include TestbedDataset used by create_data.py to create data, and performance measures.
-+ training.py
++ training.py: train a GraphDTA model.
++ models/ginconv.py, gat.py, gat_gcn.py, and gcn.py: proposed models GINConvNet, GATNet, GAT_GCN, and GCNNet receiving graphs as input for drugs.
 
 # Step-by-step running:
 
@@ -63,7 +64,7 @@ For example, it returns two files model_GATNet_davis.model and result_GATNet_dav
 ## 3. Train a prediction model with validation 
 
 In "3. Train a prediction model", a model is trained on training data and chosen when it gains the best MSE for testing data.
-The result by two ways of training is comparable though.
+This follows how a model was chosen in https://github.com/hkmztrk/DeepDTA. The result by two ways of training is comparable though.
 
 In this section, a model is trained on 80% of training data and chosen if it gains the best MSE for validation data, 
 which is 20% of training data. Then the model is used to predict affinity for testing data.
@@ -75,4 +76,4 @@ python training_validation.py 0 0 0
 ```
 
 This returns the model achieving the best MSE for validation data throughout the training and performance results of the model on testing data.
-
+For example, it returns two files model_GATNet_davis.model and result_GATNet_davis.csv when running GATNet on Davis data.

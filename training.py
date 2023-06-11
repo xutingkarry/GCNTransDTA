@@ -31,7 +31,8 @@ def train(model, device, train_loader, optimizer, epoch):#(GCN,cuda:0,训练的�
         #forward
         output = model(data)
         #模型输入特征
-        loss = loss_fn(output, data.y.view(-1, 1).float().to(device))#?
+
+        loss = loss_fn(output, data.y.view(-1, 1).float().to(device))
         loss.backward()#反向传播
         optimizer.step()#更新优化器
         if batch_idx % LOG_INTERVAL == 0:
@@ -63,7 +64,6 @@ model_st = modeling.__name__
 loss_fn = nn.MSELoss()
 
 
-# 设置为8，原来是512
 TRAIN_BATCH_SIZE = 256
 TEST_BATCH_SIZE = 256
 
@@ -72,18 +72,12 @@ LOG_INTERVAL = 20
 NUM_EPOCHS = 2000
 
 def main():
-    
-    # cuda_name = "cuda:0"
-    # print(torch.cuda.current_device())
+
     cuda_name = "cuda:0"
     print(torch.cuda.current_device())
     if len(sys.argv) > 3:
         cuda_name = "cuda:"  + str([3])
-    #print("sys.argv: ",sys.argv)#['D:/AReadingbooks/AAADTA/first/GraphDTA-4-16/training.py']
-    #print('cuda_name:', cuda_name)#打印cuda名字
 
-    #print('Learning rate: ', LR)#学习率：控制模型的学习进度，在训练过程中，应该随着轮数逐渐减缓
-    #print('Epochs: ', NUM_EPOCHS)#训练过程中数据将被“轮”多少次=训练样本的数量/batch_size
 
     for dataset in datasets:#数据准备
         print('\nrunning on ', model_st + '_' + dataset)
@@ -95,23 +89,16 @@ def main():
             train_data = TestbedDataset(root='data', dataset=dataset + '_train')
             test_data = TestbedDataset(root='data', dataset=dataset + '_test')
 
-            # make data PyTorch mini-batch processing ready
-            # 读取训练数据这里，用了多线程去读取，数据放在内存中
-            train_loader = DataLoader(train_data, batch_size=TRAIN_BATCH_SIZE, shuffle=True, num_workers=4,
-                                      pin_memory=True)
-            test_loader = DataLoader(test_data, batch_size=TEST_BATCH_SIZE, shuffle=False, num_workers=4,
-                                      pin_memory=True)
-            # train_loader = DataLoader(train_data, batch_size=TRAIN_BATCH_SIZE, shuffle=True,
-            #                           pin_memory=True)
-            # test_loader = DataLoader(test_data, batch_size=TEST_BATCH_SIZE, shuffle=False,
-            #                          pin_memory=True)
+
+            train_loader = DataLoader(train_data, batch_size=TRAIN_BATCH_SIZE, shuffle=True,
+                                      pin_memory=False)
+            test_loader = DataLoader(test_data, batch_size=TEST_BATCH_SIZE, shuffle=False,
+                                      pin_memory=False)
 
             # training the model
 
             device = torch.device(cuda_name if torch.cuda.is_available() else "cpu")#device表示我用的是gpu还是cpu
-            #device=torch.device("cpu")
-            #print("torch.cuda.device_count():",torch.cuda.device_count())
-            #print("torch.cuda.is_available():",torch.cuda.is_available())
+
             model = modeling().to(device)#这里开始进入gcn。py
             optimizer = torch.optim.Adam(model.parameters(), lr=LR)
             #print("optimizer:",optimizer)#优化算法

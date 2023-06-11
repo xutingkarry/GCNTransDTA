@@ -1,93 +1,217 @@
-# -*- coding: utf-8 -*-
-from typing import Optional
-import torch
-from torch import Tensor
-from torch_scatter import scatter, segment_csr, gather_csr
-from torch_geometric.utils.num_nodes import maybe_num_nodes
-from scipy.sparse import csr_matrix,lil_matrix
+import os
+from math import sqrt
+
 import numpy as np
+import torch
+
+from scipy import stats
+from torch_geometric.data import InMemoryDataset, DataLoader
+from torch_geometric import data as DATA
+from numba import jit
 
 
-def count_parameters(model):
-    return sum([p.numel() for p in model.parameters() if p.requires_grad])
+class TestbedDataset(InMemoryDataset):
+    def __init__(self, root='/tmp', dataset='divas',
+                 xd=None, xt=None, y=None, transform=None,
+                 pre_transform=None, smile_graph=None):
 
-def dense_to_sparse_tensor(matrix):
-    rows, columns = torch.where(matrix > 0)
-    values = torch.ones(rows.shape)
-    indices = torch.from_numpy(np.vstack((rows,
-                                          columns))).long()
-    shape = torch.Size(matrix.shape)
-    return torch.sparse.FloatTensor(indices, values, shape)
-
-
-def add_zeros(data):
-    data.x = torch.zeros(data.num_nodes, dtype=torch.long)
-    return data
-
-
-def extract_node_feature(data, reduce='add'):
-    if reduce in ['mean', 'max', 'add']:
-        data.x = scatter(data.edge_attr,
-                         data.edge_index[0],
-                         dim=0,
-                         dim_size=data.num_nodes,
-                         reduce=reduce)
-    else:
-        raise Exception('Unknown Aggregation Type')
-    return data
-
-
-def pad_batch(x, ptr, return_mask=False):
-    bsz = len(ptr) - 1
-    # num_nodes = torch.diff(ptr)
-    max_num_nodes = torch.diff(ptr).max().item()
-
-    all_num_nodes = ptr[-1].item()
-    cls_tokens = False
-    x_size = len(x[0]) if isinstance(x, (list, tuple)) else len(x)
-    if x_size > all_num_nodes:
-        cls_tokens = True
-        max_num_nodes += 1
-    if isinstance(x, (list, tuple)):
-        new_x = [xi.new_zeros(bsz, max_num_nodes, xi.shape[-1]) for xi in x]
-        if return_mask:
-            padding_mask = x[0].new_zeros(bsz, max_num_nodes).bool()
-    else:
-        new_x = x.new_zeros(bsz, max_num_nodes, x.shape[-1])
-        if return_mask:
-            padding_mask = x.new_zeros(bsz, max_num_nodes).bool()
-
-    for i in range(bsz):
-        num_node = ptr[i + 1] - ptr[i]
-        if isinstance(x, (list, tuple)):
-            for j in range(len(x)):
-                new_x[j][i][:num_node] = x[j][ptr[i]:ptr[i + 1]]
-                if cls_tokens:
-                    new_x[j][i][-1] = x[j][all_num_nodes + i]
+        # root is required for save preprocessed data, default is '/tmp'
+        super(TestbedDataset, self).__init__(root, transform, pre_transform)
+        # benchmark dataset, default = 'davis'
+        self.dataset = dataset
+        if os.path.isfile(self.processed_paths[0]):
+            print('Pre-processed data found: {}, loading ...'.format(self.processed_paths[0]))
+            self.data, self.slices = torch.load(self.processed_paths[0])
         else:
-            new_x[i][:num_node] = x[ptr[i]:ptr[i + 1]]
-            if cls_tokens:
-                new_x[i][-1] = x[all_num_nodes + i]
-        if return_mask:
-            padding_mask[i][num_node:] = True
-            if cls_tokens:
-                padding_mask[i][-1] = False
-    if return_mask:
-        return new_x, padding_mask
-    return new_x
+            print('Pre-processed data {} not found, doing pre-processing...'.format(self.processed_paths[0]))
+            self.process(xd, xt, y, smile_graph)
+            self.data, self.slices = torch.load(self.processed_paths[0])
 
-def unpad_batch(x, ptr):
-    bsz, n, d = x.shape
-    max_num_nodes = torch.diff(ptr).max().item()
-    num_nodes = ptr[-1].item()
-    all_num_nodes = num_nodes
-    cls_tokens = False
-    if n > max_num_nodes:
-        cls_tokens = True
-        all_num_nodes += bsz
-    new_x = x.new_zeros(all_num_nodes, d)
-    for i in range(bsz):
-        new_x[ptr[i]:ptr[i + 1]] = x[i][:ptr[i + 1] - ptr[i]]
-        if cls_tokens:
-            new_x[num_nodes + i] = x[i][-1]
-    return new_x
+    @property
+    def raw_file_names(self):
+        pass
+        # return ['some_file_1', 'some_file_2', ...]
+
+    @property
+    def processed_file_names(self):
+        return [self.dataset + '.pt']
+
+    def download(self):
+        # Download to `self.raw_dir`.
+        pass
+
+    def _download(self):
+        pass
+
+    def _process(self):
+        if not os.path.exists(self.processed_dir):
+            os.makedirs(self.processed_dir)
+
+    # Customize the process method to fit the task of drug-target affinity prediction
+    # Inputs:
+    # XD - list of SMILES, XT: list of encoded target (categorical or one-hot),
+    # Y: list of labels (i.e. affinity)
+    # Return: PyTorch-Geometric format processed data
+    def process(self, xd, xt, y, smile_graph):
+        assert (len(xd) == len(xt) and len(xt) == len(y)), "The three lists must be the same length!"
+        data_list = []
+        data_len = len(xd)
+        for i in range(data_len):
+            print('Converting SMILES to graph: {}/{}'.format(i + 1, data_len))
+            smiles = xd[i]
+            target = xt[i]
+            labels = y[i]
+            # convert SMILES to molecular representation using rdkit
+            c_size, features, edge_index = smile_graph[smiles]
+            # make the graph ready for PyTorch Geometrics GCN algorithms:
+            GCNData = DATA.Data(x=torch.Tensor(features),
+                                edge_index=torch.LongTensor(edge_index).transpose(1, 0),
+                                y=torch.FloatTensor([labels]))
+            GCNData.target = torch.LongTensor([target])
+            GCNData.__setitem__('c_size', torch.LongTensor([c_size]))
+            # append graph, label and target sequence to data list
+            data_list.append(GCNData)
+
+        if self.pre_filter is not None:
+            data_list = [data for data in data_list if self.pre_filter(data)]
+
+        if self.pre_transform is not None:
+            data_list = [self.pre_transform(data) for data in data_list]
+        print('Graph construction done. Saving to file.')
+        data, slices = self.collate(data_list)
+        # save preprocessed data:
+        torch.save((data, slices), self.processed_paths[0])
+
+
+def rmse(y, f):
+    rmse = sqrt(((y - f) ** 2).mean(axis=0))
+    return rmse
+
+
+def mse(y, f):
+    mse = ((y - f) ** 2).mean(axis=0)
+    return mse
+
+
+def pearson(y, f):
+    rp = np.corrcoef(y, f)[0, 1]
+    return rp
+
+
+def spearman(y, f):
+    rs = stats.spearmanr(y, f)[0]
+    return rs
+
+
+def ci(y, f):
+    ind = np.argsort(y)
+    y = y[ind]
+    f = f[ind]
+    i = len(y) - 1
+    j = i - 1
+    z = 0.0
+    S = 0.0
+    while i > 0:
+        while j >= 0:
+            if y[i] > y[j]:
+                z = z + 1
+                u = f[i] - f[j]
+                if u > 0:
+                    S = S + 1
+                elif u == 0:
+                    S = S + 0.5
+            j = j - 1
+        i = i - 1
+        j = i - 1
+    ci = S / z
+    return ci
+
+def ci_v3(y, f):
+    ind = np.argsort(y)
+    y = y[ind]
+    f = f[ind]
+    i = len(y)
+    j = i - 1
+    i_len = i - 1
+    j_len = j - 1
+    z = 0.0
+    S = 0.0
+    for l1 in range(i):
+        for l2 in range(j):
+            if y[i_len - l1] > y[j_len - l2]:
+                z = z + 1
+                u = f[i_len - l1] - f[j_len - l2]
+                if u > 0:
+                    S = S + 1
+                elif u == 0:
+                    S = S + 0.5
+        j = j - 1
+
+    ci = S / z
+    return ci
+
+# 使用numba加速CI运算速度
+@jit(nopython=True)
+def boost_ci_v3(y, f):
+    ind = np.argsort(y)
+    y = y[ind]
+    f = f[ind]
+    i = len(y)
+    j = i - 1
+    i_len = i - 1
+    j_len = j - 1
+    z = 0.0
+    S = 0.0
+    for l1 in range(i):
+        for l2 in range(j):
+            if y[i_len - l1] > y[j_len - l2]:
+                z = z + 1
+                u = f[i_len - l1] - f[j_len - l2]
+                if u > 0:
+                    S = S + 1
+                elif u == 0:
+                    S = S + 0.5
+        j = j - 1
+    ci = S / z
+    return ci
+
+
+def r_squared_error(y_obs, y_pred):
+    y_obs = np.array(y_obs)
+    y_pred = np.array(y_pred)
+    y_obs_mean = [np.mean(y_obs) for y in y_obs]
+    y_pred_mean = [np.mean(y_pred) for y in y_pred]
+
+    mult = sum((y_pred - y_pred_mean) * (y_obs - y_obs_mean))
+    mult = mult * mult
+
+    y_obs_sq = sum((y_obs - y_obs_mean) * (y_obs - y_obs_mean))
+    y_pred_sq = sum((y_pred - y_pred_mean) * (y_pred - y_pred_mean))
+
+    return mult / float(y_obs_sq * y_pred_sq)
+
+
+def get_k(y_obs, y_pred):
+    y_obs = np.array(y_obs)
+    y_pred = np.array(y_pred)
+
+    return sum(y_obs * y_pred) / float(sum(y_pred * y_pred))
+
+
+def squared_error_zero(y_obs, y_pred):
+    k = get_k(y_obs, y_pred)
+
+    y_obs = np.array(y_obs)
+    y_pred = np.array(y_pred)
+    y_obs_mean = [np.mean(y_obs) for y in y_obs]
+    upp = sum((y_obs - (k * y_pred)) * (y_obs - (k * y_pred)))
+    down = sum((y_obs - y_obs_mean) * (y_obs - y_obs_mean))
+
+    return 1 - (upp / float(down))
+
+
+def get_rm2(ys_orig, ys_line):
+    r2 = r_squared_error(ys_orig, ys_line)
+    r02 = squared_error_zero(ys_orig, ys_line)
+
+    return r2 * (1 - np.sqrt(np.absolute((r2 * r2) - (r02 * r02))))
